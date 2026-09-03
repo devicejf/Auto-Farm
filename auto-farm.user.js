@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         2 DEVICE AUTO-FARM
 // @namespace    Device
-// @version      2.0
-// @description  Não farma acima de 85% da capacidade do armazem, integrado com a Central de Fluxo (Humanizer).
+// @version      2.1
+// @description  Não farma acima de 85% da capacidade do armazem, totalmente integrado com a Central de Fluxo (Humanizer).
 // @author       Device Grepolis
 // @match        http://*.grepolis.com/game/*
 // @match        https://*.grepolis.com/game/*
@@ -17,8 +17,7 @@
     var uw = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
     var FIXED_INTERVAL = (10 * 60 * 1000) + 5000; // 10 minutos e 5 segundos exatos
     var STORAGE_LIMIT_PERCENT = 0.85; // Limite de 85% para todos os recursos
-    const DISCORD_WEBHOOK_URL = 'https://discordapp.com/api/webhooks/1542800453535010892/ROIadCcTLR6i-kMwm5WAzhmFk53IYj_RAJENnNunl0BRtVGuD_6iPlvLwSt9BkWpfv8s';
-    let captchaAlertSent = false;
+    const MODULE_NAME = "AutoFarm";
 
     var BlacklistManager = {
         blacklistedTowns: new Set(),
@@ -52,61 +51,20 @@
         return new Promise(function (resolve) { setTimeout(resolve, ms); });
     };
 
-    AutoFarmHeadless.prototype.isCaptchaActive = function (responseError) {
-        var hcaptchaEl = document.querySelector('[class*="hcaptcha"], [id*="hcaptcha"], iframe[src*="hcaptcha"], div[src*="hcaptcha"]');
-        var textCheck = document.body && (document.body.innerText.includes('Please fill out the captcha') || document.body.innerText.includes('hCaptcha'));
-        var modalCheck = document.querySelector('.bot_check, .bot_check_window, .captcha_overlay, #antibot_window');
-        var gameBotCheck = (uw.BotCheck && typeof uw.BotCheck.isBotCheckActive === 'function' && uw.BotCheck.isBotCheckActive()) ||
-                          (uw.Game && uw.Game.is_bot_check_active === true);
-        var apiBlocked = false;
-        if (responseError) {
-            var errStr = String(responseError).toLowerCase();
-            if (errStr.includes('captcha') || errStr.includes('bot') || errStr.includes('hcaptcha')) {
-                apiBlocked = true;
-            }
+    // Centraliza a verificação de bloqueio consultando o DeviceCentral
+    AutoFarmHeadless.prototype.isBlocked = function () {
+        if (uw.DeviceCentral && typeof uw.DeviceCentral.isBlocked === 'function') {
+            return uw.DeviceCentral.isBlocked();
         }
-        var isActive = !!(hcaptchaEl || textCheck || modalCheck || gameBotCheck || apiBlocked);
-        if (isActive && !captchaAlertSent) {
-            captchaAlertSent = true;
-            this.sendCaptchaAlertToDiscord();
-        } else if (!isActive && captchaAlertSent) {
-            captchaAlertSent = false;
-        }
-        return isActive;
-    };
-
-    AutoFarmHeadless.prototype.sendCaptchaAlertToDiscord = function () {
-        if (!DISCORD_WEBHOOK_URL) return;
-        var worldDisplay = String(uw.Game?.world_id || 'Desconhecido').toUpperCase();
-        var playerName = uw.Game?.player_name || 'Desconhecido';
-        var playerId = uw.Game?.player_id || 'ID N/A';
-        var payload = {
-            username: 'Device Grepolis Bot (Segurança)',
-            avatar_url: 'https://i.imgur.com/71B88v4.png',
-            embeds: [{
-                title: '🚨 [CRÍTICO] CAPTCHA DETECTADO - ALDEIAS BÁRBARAS!',
-                description: 'O sistema de segurança do Grepolis interceptou e exigiu a resolução de um **hCaptcha** durante a coleta de recursos nas **Aldeias Bárbaras (Fazendas)**.\n\nO bot foi **pausado imediatamente** para evitar banimento.',
-                color: 16711680,
-                fields: [
-                    { name: '🌍 Mundo', value: '`' + worldDisplay + '`', inline: true },
-                    { name: '👤 Jogador Afetado', value: '`' + playerName + '`', inline: true },
-                    { name: '🆔 ID da Conta', value: '`' + playerId + '`', inline: true },
-                    { name: '⚙️ Módulo Responsável', value: '`2 DEVICE AUTO-FARM`', inline: false },
-                    { name: '⚠️ Ação Necessária', value: 'Abra a aba do jogo **imediatamente**, resolva o hCaptcha de forma manual e só depois reative as automações.', inline: false }
-                ],
-                footer: { text: 'Device Security Systems • Proteção Antiban' },
-                timestamp: new Date().toISOString()
-            }]
-        };
-        fetch(DISCORD_WEBHOOK_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        }).catch(function(err) {});
+        // Fallback local caso a central demore
+        const captchaContainer = document.getElementById('hcaptcha-container');
+        const botCheckModal = document.querySelector('.bot_check, .bot_check_window, iframe[src*="hcaptcha"]');
+        const gameBotCheck = uw.BotCheck && typeof uw.BotCheck.isBotCheckActive === 'function' ? uw.BotCheck.isBotCheckActive() : false;
+        return !!(captchaContainer || botCheckModal || gameBotCheck);
     };
 
     AutoFarmHeadless.prototype.init = function () {
-        console.log('%c[AutoFarm v4.0 - Centralized] Ativado com Prioridade Máxima na Central.', 'color: #8bc34a; font-weight: bold;');
+        console.log(`%c[${MODULE_NAME} v2.1 - Centralized] Ativado e sincronizado com o Humanizer.`, 'color: #8bc34a; font-weight: bold;');
         this.scheduleNextRun(5000);
     };
 
@@ -137,12 +95,10 @@
     AutoFarmHeadless.prototype.executeFarm = async function () {
         if (this.running) return;
         
-        if (uw.DeviceCentral && uw.DeviceCentral.isBlocked && uw.DeviceCentral.isBlocked()) {
-            this.scheduleNextRun(30000);
-            return;
-        }
-
-        if (this.isCaptchaActive()) {
+        if (this.isBlocked()) {
+            if (uw.DeviceCentral && typeof uw.DeviceCentral.sendDiscordAlert === 'function') {
+                uw.DeviceCentral.sendDiscordAlert("CAPTCHA detectado! Ciclo de farm pausado.");
+            }
             this.scheduleNextRun(30000);
             return;
         }
@@ -162,7 +118,7 @@
         this.running = false;
         
         // ⏱️ O temporizador fixo (10 min e 5 seg) SÓ É CONTADO AQUI, após a última aldeia do ciclo ser processada!
-        console.log(`[Auto-Farm] Ciclo completo encerrado. Próxima execução em 10 minutos e 5 segundos.`);
+        console.log(`[${MODULE_NAME}] Ciclo completo encerrado. Próxima execução em 10 minutos e 5 segundos.`);
         this.scheduleNextRun(FIXED_INTERVAL);
     };
 
@@ -213,14 +169,22 @@
                         if (resolved) return;
                         resolved = true;
                         clearTimeout(safety);
-                        self.isCaptchaActive(resp);
+                        if (self.isBlocked()) {
+                            if (uw.DeviceCentral && typeof uw.DeviceCentral.sendDiscordAlert === 'function') {
+                                uw.DeviceCentral.sendDiscordAlert("CAPTCHA detectado na resposta da API múltipla de farm!");
+                            }
+                        }
                         resolve();
                     },
                     error: function (layout, resp) {
                         if (resolved) return;
                         resolved = true;
                         clearTimeout(safety);
-                        self.isCaptchaActive(resp);
+                        if (self.isBlocked()) {
+                            if (uw.DeviceCentral && typeof uw.DeviceCentral.sendDiscordAlert === 'function') {
+                                uw.DeviceCentral.sendDiscordAlert("CAPTCHA detectado no erro da API múltipla de farm!");
+                            }
+                        }
                         resolve();
                     }
                 });
@@ -238,7 +202,7 @@
         var farmTowns = farmCollection.models;
         var now = Math.floor(Date.now() / 1000);
         for (var i = 0; i < towns.length; i++) {
-            if (this.isCaptchaActive()) break;
+            if (this.isBlocked()) break;
             var townId = towns[i];
             if (this.isStorageFull(townId)) continue;
             var town = uw.ITowns.towns[townId];
@@ -279,14 +243,22 @@
                         if (resolved) return;
                         resolved = true;
                         clearTimeout(safety);
-                        self.isCaptchaActive(resp);
+                        if (self.isBlocked()) {
+                            if (uw.DeviceCentral && typeof uw.DeviceCentral.sendDiscordAlert === 'function') {
+                                uw.DeviceCentral.sendDiscordAlert("CAPTCHA detectado na resposta do claim individual!");
+                            }
+                        }
                         resolve();
                     },
                     error: function (layout, resp) {
                         if (resolved) return;
                         resolved = true;
                         clearTimeout(safety);
-                        self.isCaptchaActive(resp);
+                        if (self.isBlocked()) {
+                            if (uw.DeviceCentral && typeof uw.DeviceCentral.sendDiscordAlert === 'function') {
+                                uw.DeviceCentral.sendDiscordAlert("CAPTCHA detectado no erro do claim individual!");
+                            }
+                        }
                         resolve();
                     }
                 });
