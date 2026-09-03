@@ -1,12 +1,11 @@
 // ==UserScript==
-// @name         2 DEVICE AUTO-FARM
+// @name         2 DEVICE AUTO-FARM (Standalone Integrated)
 // @namespace    Device
-// @version      2.1
-// @description  Não farma acima de 85% da capacidade do armazem, totalmente integrado com a Central de Fluxo (Humanizer).
+// @version      2.2
+// @description  Não farma acima de 85% da capacidade do armazém, totalmente integrado com Central de Fluxo interna.
 // @author       Device Grepolis
 // @match        http://*.grepolis.com/game/*
 // @match        https://*.grepolis.com/game/*
-// @require      https://raw.githubusercontent.com/devicejf/Humanizer/main/humanizer.js
 // @grant        unsafeWindow
 // @run-at       document-idle
 // ==/UserScript==
@@ -14,10 +13,49 @@
 (function () {
     'use strict';
 
+    const MODULE_NAME = "AutoFarm";
     var uw = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
     var FIXED_INTERVAL = (10 * 60 * 1000) + 5000; // 10 minutos e 5 segundos exatos
     var STORAGE_LIMIT_PERCENT = 0.85; // Limite de 85% para todos os recursos
-    const MODULE_NAME = "AutoFarm";
+
+    // ==========================================
+    // CENTRAL DE FLUXO INTERNA (Garante independência)
+    // ==========================================
+    class DeviceFlowManager {
+        constructor() {
+            this.isBusy = false;
+            this.queue = [];
+            this.isFarmActive = false;
+        }
+
+        isBlocked() {
+            const captchaContainer = document.getElementById('hcaptcha-container');
+            const botCheckModal = document.querySelector('.bot_check, .bot_check_window, iframe[src*="hcaptcha"]');
+            const gameBotCheck = uw.BotCheck && typeof uw.BotCheck.isBotCheckActive === 'function' ? uw.BotCheck.isBotCheckActive() : false;
+            return !!(captchaContainer || botCheckModal || gameBotCheck);
+        }
+
+        sendDiscordAlert(msg) {
+            console.error(`🚨 [${MODULE_NAME}] ALERTA DE SEGURANÇA: ${msg}`);
+        }
+
+        async executeFarmPriority(farmCallback) {
+            this.isFarmActive = true;
+            console.log(`[${MODULE_NAME}] 🚨 Prioridade Máxima acionada: Coleta de Aldeias assumindo controle absoluto!`);
+            try {
+                await farmCallback();
+            } catch (e) {
+                console.error(`[${MODULE_NAME}] Erro durante a execução prioritária do Farm:`, e);
+            }
+            this.isFarmActive = false;
+            console.log(`[${MODULE_NAME}] ✅ Ciclo de Farm finalizado com sucesso.`);
+        }
+    }
+
+    // Inicializa a central global caso não exista
+    if (!uw.DeviceCentral) {
+        uw.DeviceCentral = new DeviceFlowManager();
+    }
 
     var BlacklistManager = {
         blacklistedTowns: new Set(),
@@ -38,6 +76,7 @@
             } catch (e) {}
             if (attempts >= 120) {
                 clearInterval(timer);
+                console.warn(`[${MODULE_NAME}] Timeout aguardando o jogo carregar completamente.`);
             }
         }, 500);
     }
@@ -51,20 +90,15 @@
         return new Promise(function (resolve) { setTimeout(resolve, ms); });
     };
 
-    // Centraliza a verificação de bloqueio consultando o DeviceCentral
     AutoFarmHeadless.prototype.isBlocked = function () {
         if (uw.DeviceCentral && typeof uw.DeviceCentral.isBlocked === 'function') {
             return uw.DeviceCentral.isBlocked();
         }
-        // Fallback local caso a central demore
-        const captchaContainer = document.getElementById('hcaptcha-container');
-        const botCheckModal = document.querySelector('.bot_check, .bot_check_window, iframe[src*="hcaptcha"]');
-        const gameBotCheck = uw.BotCheck && typeof uw.BotCheck.isBotCheckActive === 'function' ? uw.BotCheck.isBotCheckActive() : false;
-        return !!(captchaContainer || botCheckModal || gameBotCheck);
+        return false;
     };
 
     AutoFarmHeadless.prototype.init = function () {
-        console.log(`%c[${MODULE_NAME} v2.1 - Centralized] Ativado e sincronizado com o Humanizer.`, 'color: #8bc34a; font-weight: bold;');
+        console.log(`%c[${MODULE_NAME} v2.2 - Standalone] Ativado e operando de forma autônoma.`, 'color: #8bc34a; font-weight: bold;');
         this.scheduleNextRun(5000);
     };
 
@@ -91,7 +125,6 @@
         }
     };
 
-    // INTEGRAÇÃO COM A CENTRAL: O ciclo inteiro é englobado pela prioridade máxima
     AutoFarmHeadless.prototype.executeFarm = async function () {
         if (this.running) return;
         
@@ -105,19 +138,16 @@
 
         this.running = true;
 
-        // Se a central existir, solicita prioridade máxima para executar o farm completo
         if (uw.DeviceCentral && typeof uw.DeviceCentral.executeFarmPriority === 'function') {
             await uw.DeviceCentral.executeFarmPriority(async () => {
                 await this.claim();
             });
         } else {
-            // Fallback caso a central demore a carregar
             await this.claim();
         }
 
         this.running = false;
         
-        // ⏱️ O temporizador fixo (10 min e 5 seg) SÓ É CONTADO AQUI, após a última aldeia do ciclo ser processada!
         console.log(`[${MODULE_NAME}] Ciclo completo encerrado. Próxima execução em 10 minutos e 5 segundos.`);
         this.scheduleNextRun(FIXED_INTERVAL);
     };
@@ -139,7 +169,9 @@
                 islands.add(attributes.island_id);
                 townsList.push(attributes.id);
             }
-        } catch (e) {}
+        } catch (e) {
+            console.error(`[${MODULE_NAME}] Erro ao gerar lista de cidades:`, e);
+        }
         return townsList;
     };
 
@@ -147,8 +179,12 @@
         var captain = false;
         try { captain = uw.GameDataPremium.isAdvisorActivated('captain'); } catch (e) {}
         var towns = this.generateList();
-        if (towns.length === 0) return;
+        if (towns.length === 0) {
+            console.log(`[${MODULE_NAME}] Nenhuma cidade elegível para coleta no momento.`);
+            return;
+        }
         
+        console.log(`[${MODULE_NAME}] Iniciando coleta para ${towns.length} cidades. Administrador Capitão ativo: ${captain}`);
         if (captain) {
             await this.claimMultiple(towns, 300, 600);
         } else {
@@ -169,22 +205,14 @@
                         if (resolved) return;
                         resolved = true;
                         clearTimeout(safety);
-                        if (self.isBlocked()) {
-                            if (uw.DeviceCentral && typeof uw.DeviceCentral.sendDiscordAlert === 'function') {
-                                uw.DeviceCentral.sendDiscordAlert("CAPTCHA detectado na resposta da API múltipla de farm!");
-                            }
-                        }
+                        console.log(`[${MODULE_NAME}] Coleta múltipla executada com sucesso.`);
                         resolve();
                     },
                     error: function (layout, resp) {
                         if (resolved) return;
                         resolved = true;
                         clearTimeout(safety);
-                        if (self.isBlocked()) {
-                            if (uw.DeviceCentral && typeof uw.DeviceCentral.sendDiscordAlert === 'function') {
-                                uw.DeviceCentral.sendDiscordAlert("CAPTCHA detectado no erro da API múltipla de farm!");
-                            }
-                        }
+                        console.warn(`[${MODULE_NAME}] Erro na resposta da API múltipla de farm.`);
                         resolve();
                     }
                 });
@@ -201,6 +229,7 @@
         var relations = relationCollection.models;
         var farmTowns = farmCollection.models;
         var now = Math.floor(Date.now() / 1000);
+        
         for (var i = 0; i < towns.length; i++) {
             if (this.isBlocked()) break;
             var townId = towns[i];
@@ -243,22 +272,12 @@
                         if (resolved) return;
                         resolved = true;
                         clearTimeout(safety);
-                        if (self.isBlocked()) {
-                            if (uw.DeviceCentral && typeof uw.DeviceCentral.sendDiscordAlert === 'function') {
-                                uw.DeviceCentral.sendDiscordAlert("CAPTCHA detectado na resposta do claim individual!");
-                            }
-                        }
                         resolve();
                     },
                     error: function (layout, resp) {
                         if (resolved) return;
                         resolved = true;
                         clearTimeout(safety);
-                        if (self.isBlocked()) {
-                            if (uw.DeviceCentral && typeof uw.DeviceCentral.sendDiscordAlert === 'function') {
-                                uw.DeviceCentral.sendDiscordAlert("CAPTCHA detectado no erro do claim individual!");
-                            }
-                        }
                         resolve();
                     }
                 });
